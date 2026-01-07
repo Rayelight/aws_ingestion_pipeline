@@ -1,0 +1,62 @@
+version: 1
+id: binance_aggTrades
+source: binance_api
+entity: aggTrades
+
+silver:
+  columns:
+    - { name: "agg_trade_id", type: "int64" }
+    - { name: "price", type: "float64" }
+    - { name: "qty", type: "float64" }
+    - { name: "first_trade_id", type: "int64" }
+    - { name: "last_trade_id", type: "int64" }
+    - { name: "trade_time", type: "timestamp_ms" }
+    - { name: "is_buyer_maker", type: "boolean" }
+    - { name: "is_best_match", type: "boolean" }
+
+    - { name: "symbol", type: "string" }
+    - { name: "dt", type: "date" }
+    - { name: "hour", type: "string" }
+
+  transforms:
+    keep: ["a", "p", "q", "f", "l", "T", "m", "M"]
+
+    rename:
+      a: "agg_trade_id"
+      p: "price"
+      q: "qty"
+      f: "first_trade_id"
+      l: "last_trade_id"
+      T: "trade_time"
+      m: "is_buyer_maker"
+      M: "is_best_match"
+
+    add_columns:
+      - name: "symbol"
+        from_param: "symbol"
+      - name: "dt"
+        from_param: "date"
+      - name: "hour"
+        from_param: "hour"
+
+    cast:
+      agg_trade_id: "int64"
+      price: "float64"
+      qty: "float64"
+      first_trade_id: "int64"
+      last_trade_id: "int64"
+      trade_time: "timestamp_ms"
+      is_buyer_maker: "boolean"
+      is_best_match: "boolean"
+      symbol: "string"
+      dt: "date"
+      hour: "string"
+
+    trim: ["symbol"]
+
+    required: ["agg_trade_id", "trade_time", "price", "qty"]
+    non_null: ["agg_trade_id", "trade_time"]
+    unique_key: ["agg_trade_id"]
+
+  partitioning:
+    by_params: ["date", "symbol"]

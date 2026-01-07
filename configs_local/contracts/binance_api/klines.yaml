@@ -1,0 +1,47 @@
+version: 1
+id: binance_klines
+source: binance_api
+entity: klines
+
+params:
+  required: ["date", "hour", "symbol", "interval", "start_ms", "end_ms"]
+  optional: ["limit"]
+
+api:
+  base_url: "https://api.binance.com"
+  method: "GET"
+  endpoint: "/api/v3/klines"
+  headers:
+    Accept: "application/json"
+  query:
+    symbol: "{symbol}"
+    interval: "{interval}"
+    limit: "{limit}"
+    startTime: "{start_ms}"
+    endTime: "{end_ms}"
+
+  # Binance klines returns a list of arrays; we map them to dicts before writing bronze.
+  response_mapping:
+    type: "array_to_object"
+    columns:
+      - "open_time"
+      - "open"
+      - "high"
+      - "low"
+      - "close"
+      - "volume"
+      - "close_time"
+      - "quote_asset_volume"
+      - "number_of_trades"
+      - "taker_buy_base_asset_volume"
+      - "taker_buy_quote_asset_volume"
+
+pagination:
+  type: "none"
+
+incremental:
+  mode: "full"
+
+output:
+  bronze_format: "jsonl"
+  silver_format: "parquet"

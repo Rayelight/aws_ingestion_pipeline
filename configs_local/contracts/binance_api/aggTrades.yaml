@@ -1,0 +1,29 @@
+version: 1
+id: binance_aggTrades
+source: binance_api
+entity: aggTrades
+
+params:
+  required: ["date", "hour", "symbol"]
+  optional: ["limit", "from_id"]
+
+api:
+  base_url: "https://api.binance.com"
+  method: "GET"
+  endpoint: "/api/v3/aggTrades"
+  headers:
+    Accept: "application/json"
+  query:
+    symbol: "{symbol}"
+    limit: "{limit}"
+    fromId: "{from_id}"
+
+pagination:
+  type: "none"
+
+incremental:
+  mode: "full"
+
+output:
+  bronze_format: "jsonl"
+  silver_format: "parquet"

@@ -1,0 +1,75 @@
+version: 1
+id: binance_klines
+source: binance_api
+entity: klines
+
+silver:
+  columns:
+    - { name: "open_time", type: "timestamp_ms" }
+    - { name: "open", type: "float64" }
+    - { name: "high", type: "float64" }
+    - { name: "low", type: "float64" }
+    - { name: "close", type: "float64" }
+    - { name: "volume", type: "float64" }
+    - { name: "close_time", type: "timestamp_ms" }
+    - { name: "quote_asset_volume", type: "float64" }
+    - { name: "number_of_trades", type: "int64" }
+    - { name: "taker_buy_base_asset_volume", type: "float64" }
+    - { name: "taker_buy_quote_asset_volume", type: "float64" }
+
+    - { name: "symbol", type: "string" }
+    - { name: "interval", type: "string" }
+    - { name: "dt", type: "date" }
+    - { name: "hour", type: "string" }
+
+  transforms:
+    keep:
+      - "open_time"
+      - "open"
+      - "high"
+      - "low"
+      - "close"
+      - "volume"
+      - "close_time"
+      - "quote_asset_volume"
+      - "number_of_trades"
+      - "taker_buy_base_asset_volume"
+      - "taker_buy_quote_asset_volume"
+
+    rename: {}
+
+    add_columns:
+      - name: "symbol"
+        from_param: "symbol"
+      - name: "interval"
+        from_param: "interval"
+      - name: "dt"
+        from_param: "date"
+      - name: "hour"
+        from_param: "hour"
+
+    cast:
+      open_time: "timestamp_ms"
+      open: "float64"
+      high: "float64"
+      low: "float64"
+      close: "float64"
+      volume: "float64"
+      close_time: "timestamp_ms"
+      quote_asset_volume: "float64"
+      number_of_trades: "int64"
+      taker_buy_base_asset_volume: "float64"
+      taker_buy_quote_asset_volume: "float64"
+      symbol: "string"
+      interval: "string"
+      dt: "date"
+      hour: "string"
+
+    trim: ["symbol", "interval"]
+
+    required: ["open_time", "close_time", "open", "high", "low", "close"]
+    non_null: ["open_time", "close_time"]
+    unique_key: ["open_time", "symbol", "interval"]
+
+  partitioning:
+    by_params: ["date", "symbol", "interval"]
