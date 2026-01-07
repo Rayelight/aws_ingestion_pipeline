@@ -1,157 +1,127 @@
-# Ingesteur - A Metadata-Driven Financial Data Ingestion Pipeline
+# AWS Ingestion Pipeline
 
-## 1. Overview
+This project implements a generic and scalable ingestion pipeline on AWS. It is designed to fetch data from various sources through API calls, store it in a data lake on S3, and transform it into a queryable format.
 
-Ingesteur is a robust, metadata-driven ETL pipeline designed to ingest financial market data from various sources (initially Binance) and process it through a multi-layered data lake on AWS. The entire infrastructure is defined and deployed as code using Terraform.
+## Objective
 
-The core principle of this project is a **contract-driven approach**. The logic for data ingestion, validation, and transformation is not hardcoded but is defined in a series of YAML "contract" and "schema" files. This allows the pipeline to be easily extended to new data sources, tables (entities), and transformations without changing the core Python or Terraform code.
+The main objective of this project is to provide a ready-to-use, infrastructure-as-code solution for building data ingestion pipelines. It aims to be configuration-driven, allowing users to easily add new data sources by simply adding configuration files, without modifying the core logic of the pipeline.
 
-The pipeline processes data through three distinct layers in an S3 data lake:
-*   **Bronze Layer**: Stores raw, untouched data from the source, serving as the single source of truth.
-*   **Silver Layer**: Stores cleaned, normalized, and validated data, ready for analytics.
-*   **Gold Layer**: (Future implementation) Stores aggregated, business-level data for reporting and dashboarding.
+## Architecture
 
-## 2. Architecture Overview
+The pipeline is composed of several AWS services, orchestrated by Terraform. The following diagram illustrates the architecture of the project:
 
-The entire infrastructure is deployed on AWS using Terraform. The architecture is designed to be scalable, event-driven, and cost-effective, leveraging serverless components where possible.
+![Infrastructure Diagram](infra_aws.svg)
 
-```
-                               +-----------------------+
-                               |    Binance API        |
-                               +-----------+-----------+
-                                           |
-                                           | (triggered by SQS)
-                                           v
-+------------------+           +-----------+-----------+
-| Ingestion Requester| ----> |   SQS Ingest Queue    |
-| (tools/)         |         +-----------+-----------+
-+------------------+                       |
-                                           | 1. Trigger Lambda
-                                           v
-+----------------------------------------------------+   +-------------------+
-| AWS S3 Data Lake (Single Bucket)                   |   | S3 Config Bucket  |
-|                                                    |   | (configs/*)       |
-|  +---------------------------------------------+   |   +-------------------+
-|  | data/bronze/binance/trades/ (raw CSV)       |<--+---------+
-|  +---------------------------------------------+   | 2. Lambda |
-|                  |                                 |   (ingestion)     |
-|                  | 3. S3 Put Event                 |           |
-|                  v                                 |   +-------+-----------+
-|  +---------------------------+                     |   |   Bronze-to-Silver|
-|  |   Bronze-to-Silver Lambda   |---------------------->|   Lambda          |
-|  +---------------------------+                     |   +-------------------+
-|                  |                                 |
-|                  | 4. Write Cleaned Parquet        |
-|                  v                                 |
-|  +---------------------------------------------+   |
-|  | data/silver/binance/trades/ (Parquet)       |   |
-|  +---------------------------------------------+   |
-|                                                    |
-+----------------------------------------------------+
-         ^                                     ^
-         | 5. Crawler updates partitions       | 6. Jobs & Lambdas update tables
-         v                                     v
-+----------------------+                 +------------------+
-| Glue Data Catalog    | <-------------> |  Amazon Athena   |
-| (Tables & Partitions)|                 +------------------+
-+----------------------+
-```
+### Data Flow
 
-### Key Components:
-*   **Configuration**: All pipeline logic is controlled by YAML files stored in a dedicated `config/` prefix in the data lake S3 bucket. These are deployed via the `config_publisher` tool.
-*   **Data Lake**: A single S3 bucket houses all data, organized by layer, data source, and table (`data/{layer}/{dataSource}/{tableName}`).
-*   **Ingestion**: A combination of a Python tool (`ingestion_requester`) and an SQS-triggered Lambda function (`ingestion-lambda`) fetches data from the source API and lands it in the Bronze layer.
-*   **Bronze-to-Silver ETL**: An event-driven Lambda function is triggered by new objects in the Bronze layer. It reads the corresponding configuration, applies cleaning and validation rules, and writes the data to the Silver layer in Parquet format.
-*   **Glue Data Catalog**: Acts as the central metastore for all data. Tables are created and updated programmatically by the deployment script and ETL processes. A Glue Crawler keeps the Bronze tables' partitions in sync.
-*   **Terraform**: The entire infrastructure, including S3 buckets, Lambda functions, Glue jobs/crawlers, and IAM roles, is managed via Terraform modules in the `terrafom_silver/` directory.
+1.  **Trigger**: An Amazon EventBridge rule is configured to periodically send a message to an SQS queue. This message contains the necessary information to start the ingestion process, such as the data source and entity to be ingested.
+2.  **Ingestion Queue**: The Amazon SQS `ingest` queue receives the message from EventBridge.
+3.  **Ingest Lambda**: An AWS Lambda function, triggered by the `ingest` queue, is responsible for fetching the data from the source API. The details of the API call (endpoint, parameters, etc.) are defined in a "contract" file stored on S3.
+4.  **Bronze Layer**: The raw data fetched from the API is stored in the "bronze" layer of the S3 data lake in JSONL format. A manifest file containing metadata about the ingestion is also created.
+5.  **Transform Queue**: After successfully storing the data in the bronze layer, the `ingest` Lambda sends a message to the `transform` SQS queue.
+6.  **Transform Lambda**: Another Lambda function, triggered by the `transform` queue, is responsible for processing the raw data.
+7.  **Silver Layer**: The `transform` Lambda reads the data from the bronze layer, applies transformations based on a "schema" file (also stored on S3), and stores the result in the "silver" layer of the data lake in Parquet format. The silver layer is partitioned for efficient querying.
+8.  **Gold Layer**: The final "gold" layer is created from the silver layer using Amazon Athena CTAS (Create Table As Select) queries. This layer represents the data in a denormalized and aggregated form, ready for consumption by business intelligence tools and data analysis applications.
+9.  **Tracking**: An Amazon DynamoDB table is used to track the status of each ingestion run, providing idempotency and a detailed history of the pipeline's executions.
 
+## Repository Structure
 
-## 3. Project Structure
+The repository is organized into the following directories:
 
-The repository is organized into three main directories: `configurations`, `scripts` (inside `tools`), and `terrafom_silver`.
+*   `configs_local`: Contains local copies of the contract and schema configuration files. These files are meant to be uploaded to S3 by the `config_publisher` tool.
+    *   `contracts`: Contains the contract files, which define how to fetch data from the source APIs. Each data source has its own subdirectory.
+    *   `schema`: Contains the schema files, which define how to transform and store the data in the data lake.
 
-```
-/
-├── configurations/         # Local source of truth for all pipeline configurations.
-│   ├── active_sources.json # Master file listing which data sources and tables are active.
-│   └── binance/
-│       ├── tables/         # Main configuration for each table (data paths, partitions).
-│       │   └── trades.json
-│       └── schemas/        # Column-level schema and validation rules for each table.
-│           └── trades.json
-│
-├── scripts/                # Python scripts for managing and interacting with the pipeline.
-│   ├── config_models.py    # Pydantic models for validating all configuration files.
-│   └── deploy_configs.py   # Script to validate and upload local configs to S3.
-│
-├── terrafom_silver/        # All Terraform infrastructure code.
-│   ├── main.tf             # Root module, defines resources and calls other modules.
-│   ├── variables.tf        # Root variables for the Terraform configuration.
-│   ├── glue/               # Terraform module for the Glue Crawler.
-│   ├── glue_jobs/          # Terraform module for generic Glue Jobs.
-│   ├── lambda/             # Terraform module for creating Lambda functions and layers.
-│   ├── s3/                 # Terraform module for creating S3 buckets.
-│   └── sqs/                # Terraform module for creating SQS queues.
-│
-├── test/                   # Unit tests for the Python tools and scripts.
-│
-├── request_ingestion.py    # Legacy script for sending ingestion requests.
-└── requirements.txt        # Python dependencies for the project.
-```
+*   `infra`: Contains all the Terraform code for deploying the infrastructure.
+    *   `modules`: Contains the reusable Terraform modules.
+        *   `lambda`: Manages the Lambda functions.
+            *   `functions`: Contains the source code for the Lambda functions.
+                *   `ingest`: The Lambda function for ingesting data from the source APIs.
+                *   `transform`: The Lambda function for transforming the raw data.
+                *   `gold_ctas_runner`: The Lambda function for running the Athena CTAS queries.
+        *   `lambda_layer`: Manages the Lambda layers.
+            *   `layers`: Contains the requirements files for the Lambda layers. Each layer has its own subdirectory with a `requirements.txt` file.
 
-## 4. How to Use
+*   `tools`: Contains a set of Python scripts for interacting with the pipeline.
+    *   `config_publisher`: This tool validates the local contract and schema files and uploads them to the S3 bucket.
+    *   `ingestion_requester`: This tool sends a message to the SQS `ingest` queue to manually trigger an ingestion run.
+    *   `smoke_tests`: This tool runs a series of end-to-end tests to verify that the pipeline is working correctly. It includes a `ddb_tracker` to check the DynamoDB tracking table, an `s3_finder` to check for files in the data lake, and an `sqs_probe` to check the SQS queues.
 
-### Prerequisites
-*   Python 3.10+
-*   Terraform 1.0+
-*   AWS CLI, with credentials configured.
-*   Docker (for local development of AWS Glue scripts).
+*   `test`: Contains the unit and integration tests for the local tools.
 
-### Setup
-1.  **Install Dependencies**:
-    ```sh
-    pip install -r requirements.txt
+## Features
+
+*   **Infrastructure as Code**: The entire infrastructure is managed by Terraform, ensuring reproducibility and easy customization.
+*   **Configuration-Driven**: New data sources can be added by simply creating YAML configuration files (contracts and schemas).
+*   **Scalable and Serverless**: The pipeline is built on serverless components (Lambda, SQS, S3), which allows it to scale automatically based on the workload.
+*   **Data Lake Architecture**: The data is organized into three layers (bronze, silver, and gold), following the best practices for data lake design.
+*   **Idempotency**: The pipeline is designed to be idempotent, meaning that re-running it for the same period will not produce duplicate data.
+*   **Monitoring and Logging**: The pipeline is configured to send logs to Amazon CloudWatch.
+*   **Local Tooling**: The project includes a set of local tools for managing configurations and running tests.
+
+## Requirements
+
+*   [Terraform](https://www.terraform.io/downloads.html)
+*   [Python 3.9+](https://www.python.org/downloads/)
+*   An AWS account with the necessary permissions.
+
+The Python dependencies are listed in the `requirements.txt` file:
+
+*   `boto3`: The AWS SDK for Python.
+*   `requests`: For making HTTP requests to the APIs.
+*   `pydantic`: For data validation and settings management.
+
+## How to use it
+
+### AWS Configuration
+
+Before you begin, make sure you have configured your AWS credentials.
+
+### Deployment
+
+1.  **Initialize Terraform**:
+    ```bash
+    cd infra
+    terraform init
+    ```
+2.  **Review the plan**:
+    ```bash
+    terraform plan
+    ```
+3.  **Apply the changes**:
+    ```bash
+    terraform apply
     ```
 
-### Step 1: Define Configurations
-1.  Add or modify the YAML configuration files in the `configurations/` directory.
-    *   To add a new table, create its corresponding `tables/{table_name}.json` and `schemas/{table_name}.json` files under the correct data source directory (e.g., `configurations/binance/`).
-2.  Ensure the new table is listed in `configurations/active_sources.json`.
+### Local Tools
 
-### Step 2: Deploy Configurations & Bronze Tables
-Run the `deploy_configs.py` script to validate your local configurations, upload them to S3, and create the necessary Bronze tables in the Glue Data Catalog.
+The `tools` directory contains a set of Python scripts for interacting with the pipeline.
 
-```sh
-# Replace <your-data-lake-bucket> with the name of your deployed S3 bucket
-python scripts/deploy_configs.py <your-data-lake-bucket>
+*   `config_publisher`: For validating and uploading the contract and schema configuration files to S3.
+*   `ingestion_requester`: For manually triggering an ingestion run by sending a message to the SQS `ingest` queue.
+*   `smoke_tests`: For running end-to-end tests to ensure the pipeline is working correctly.
+
+To use the tools, you first need to install the dependencies:
+
+```bash
+pip install -r requirements.txt
 ```
 
-### Step 3: Run the Ingestion
-The `request_ingestion.py` script sends messages to the SQS queue to trigger the ingestion Lambda. *(Note: This process can be updated to be driven by the `ingestion_config` in the new configuration files).*
+Then, you can run each tool using `python -m tools.<tool_name>.main`.
 
-```sh
-python request_ingestion.py
-```
-This will land new data in the Bronze layer, which will automatically trigger the Bronze-to-Silver Lambda transformation.
+## Terraform Modules
 
-### Step 4: Deploy Infrastructure
-To apply any changes to the AWS infrastructure, run the Terraform deployment script.
+The Terraform code is organized into several modules, located in the `infra/modules` directory.
 
-```sh
-cd terrafom_silver/
-./terraform.sh
-```
-
-## 5. Testing
-This project uses `pytest`. To run the complete suite of unit tests for the Python tools:
-
-1.  **Install Test Dependencies**:
-    ```sh
-    pip install pytest pytest-mock
-    ```
-2.  **Run Pytest**:
-    From the root directory of the project, simply run:
-    ```sh
-    pytest
-    ```
-This will automatically discover and run all test files located in the `test/` directory.
+*   `athena`: Creates the Athena database and workgroup.
+*   `dynamodb`: Creates the DynamoDB table for tracking ingestion runs.
+*   `eventbridge_ingest_schedule`: Creates the EventBridge rule for scheduling ingestions.
+*   `glue_catalog`: Creates the Glue Data Catalog.
+*   `gold_ctas`: Manages the Gold layer creation using Athena CTAS.
+*   `iam`: Defines the IAM roles and policies.
+*   `ingesteur`: The main module that orchestrates all the other modules.
+*   `lambda`: Manages the Lambda functions for ingestion and transformation.
+*   `lambda_layer`: Builds and manages the Lambda layers.
+*   `s3_datalake`: Creates and configures the S3 data lake bucket.
+*   `s3_monitoring`: Creates and configures the S3 bucket for monitoring.
+*   `sqs`: Creates the SQS queues.
